@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "cf-build": "next build && next-on-pages",
+    "pages:deploy": "npx wrangler pages deploy .vercel/output/static --project-name=avatar-me",
+    "deploy": "npm run cf-build && npm run pages:deploy",
     "lint": "eslint"
   },
   "dependencies": {
