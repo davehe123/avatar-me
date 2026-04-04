@@ -1,0 +1,6 @@
+# Ignore cache directories
+.next/cache
+.next/server
+.next/standalone
+.next/tmp
+.next/trace

@@ -1,26 +1,8 @@
-name = "avatar-me-api"
-main = "workers/worker.js"
+name = "avatar-me"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+pages_build_output_dir = ".next"
+
 [vars]
-FRONTEND_URL = "https://avatarme.pages.dev"
-
-# Cloudflare D1 Database
-[[d1_databases]]
-binding = "DB"
-database_name = "avatar-me-db"
-database_id = "YOUR_D1_DATABASE_ID"
-
-# Cloudflare R2 Bucket
-[[r2_buckets]]
-binding = "AVATARS"
-bucket_name = "avatar-me-avatars"
-
-# Secrets (set via `npx wrangler secret put`)
-# FAL_API_KEY - Fal.ai API key
-# GOOGLE_CLIENT_ID - Google OAuth Client ID
-# GOOGLE_CLIENT_SECRET - Google OAuth Client Secret
-# PAYPAL_CLIENT_ID - PayPal Client ID
-# PAYPAL_CLIENT_SECRET - PayPal Client Secret
-# AUTH_SECRET - Random secret for session tokens
+FRONTEND_URL = "https://avatar-me.pages.dev"
