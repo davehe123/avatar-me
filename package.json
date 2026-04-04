@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "cf-build": "npx @opennextjs/cloudflare build",
-    "pages:deploy": "npx wrangler pages deploy .open-next/worker --project-name=avatar-me --branch=production",
-    "deploy": "npm run cf-build && npm run pages:deploy",
+    "cf-build": "next build",
+    "pages:deploy": "npx wrangler pages deploy out --project-name=avatar-me --branch=production",
+    "deploy": "npm run build && npm run pages:deploy",
     "lint": "eslint"
   },
   "dependencies": {
