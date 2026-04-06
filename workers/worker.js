@@ -1,11 +1,6 @@
 // AvatarMe Cloudflare Worker - AI Avatar Generation API
 const FRONTEND_URL = "https://avatar-me.pages.dev";
 
-const PLANS = {
-  free: { name: "Free", daily_credits: 3, price: 0 },
-  pro: { name: "Pro", daily_credits: -1, price: 4.99 }, // -1 = unlimited
-};
-
 const FAL_API_URL = "https://queue.fal.run/fal-ai/flux-schnell";
 
 // ========== PayPal 配置 ==========
@@ -34,8 +29,6 @@ async function paypalApi(path, method, accessToken, body) {
 }
 
 // ========== 辅助函数 ==========
-const sessions = new Map();
-
 function corsHeaders(origin = "*") {
   return {
     "Access-Control-Allow-Origin": origin,
@@ -57,6 +50,11 @@ function base64urlEncode(data) {
   return btoa(JSON.stringify(data)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
+function base64urlDecode(str) {
+  const standard = str.replace(/-/g, "+").replace(/_/g, "/");
+  return atob(standard);
+}
+
 function generateId() {
   return crypto.randomUUID();
 }
@@ -67,19 +65,38 @@ function todayStr() {
 
 // ========== 数据库操作 ==========
 async function getUserByEmail(env, email) {
+  if (!email) return null;
   const result = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
   return result;
 }
 
 async function getUserById(env, id) {
+  if (!id) return null;
   const result = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
   return result;
+}
+
+async function getSession(env, token) {
+  if (!token) return null;
+  const result = await env.DB.prepare("SELECT * FROM sessions WHERE token = ?").bind(token).first();
+  return result;
+}
+
+async function createSession(env, token, userId, expiresAt) {
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)"
+  ).bind(token, userId, expiresAt).run();
+}
+
+async function deleteSession(env, token) {
+  if (!token) return;
+  await env.DB.prepare("DELETE FROM sessions WHERE token = ?").bind(token).run();
 }
 
 async function createUser(env, id, email, name, avatar_url) {
   await env.DB.prepare(
     "INSERT INTO users (id, email, name, avatar_url, plan, daily_credits, last_reset_date, created_at) VALUES (?, ?, ?, ?, 'free', 3, ?, CURRENT_TIMESTAMP)"
-  ).bind(id, email, name, avatar_url, todayStr()).run();
+  ).bind(id, email || "", name || "User", avatar_url || null, todayStr()).run();
 }
 
 async function updateUserCredits(env, userId, credits, date) {
@@ -89,7 +106,7 @@ async function updateUserCredits(env, userId, credits, date) {
 async function recordGeneration(env, id, userId, style, similarity, inputFeatures, outputUrl) {
   await env.DB.prepare(
     "INSERT INTO generations (id, user_id, style, similarity, input_features, output_url, has_watermark, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)"
-  ).bind(id, userId, style, similarity, inputFeatures, outputUrl).run();
+  ).bind(id, userId, style, Number(similarity) || 80, inputFeatures || "[]", outputUrl || "").run();
 }
 
 // ========== 次数限制检查 ==========
@@ -98,12 +115,11 @@ async function checkAndUseCredits(env, userId) {
   if (!user) return { allowed: false, reason: "用户不存在" };
 
   if (user.plan !== "free") {
-    return { allowed: true, remaining: -1 }; // unlimited
+    return { allowed: true, remaining: -1 };
   }
 
   const today = todayStr();
   if (user.last_reset_date !== today) {
-    // 重置次数
     await updateUserCredits(env, userId, 3, today);
     return { allowed: true, remaining: 3 };
   }
@@ -141,9 +157,8 @@ function getStylePrompt(styleId) {
 // ========== 请求处理 ==========
 async function handleRequest(request, env) {
   const url = new URL(request.url);
-  const path = url.pathname.replace("/avatar-me-api", ""); // 去掉前缀
+  const path = url.pathname.replace("/avatar-me-api", "");
 
-  // CORS 预检
   if (request.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders(request.headers.get("Origin")) });
   }
@@ -159,10 +174,15 @@ async function handleRequest(request, env) {
 
   if (path === "/auth/callback") {
     const code = url.searchParams.get("code");
-    const state = JSON.parse(atob(url.searchParams.get("state") || "e30="));
     if (!code) return new Response("Missing code", { status: 400 });
 
-    // 用 code 换 access_token
+    let state = { redirect: "/" };
+    try {
+      const stateParam = url.searchParams.get("state");
+      if (stateParam) state = JSON.parse(base64urlDecode(stateParam));
+    } catch (e) { /* use default */ }
+
+    // 换 access_token
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -175,13 +195,22 @@ async function handleRequest(request, env) {
       }),
     });
     const tokenData = await tokenRes.json();
-    const accessToken = tokenData.access_token;
+
+    if (!tokenData.access_token) {
+      console.error("Google token exchange failed:", tokenData);
+      return Response.redirect(`${FRONTEND_URL}/login?error=token_exchange_failed`, 302);
+    }
 
     // 获取用户信息
     const userRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-      headers: { Authorization: "Bearer " + accessToken },
+      headers: { Authorization: "Bearer " + tokenData.access_token },
     });
     const googleUser = await userRes.json();
+
+    if (!googleUser.email) {
+      console.error("Google userinfo missing email:", googleUser);
+      return Response.redirect(`${FRONTEND_URL}/login?error=userinfo_failed`, 302);
+    }
 
     // 查找或创建用户
     let user = await getUserByEmail(env, googleUser.email);
@@ -191,10 +220,10 @@ async function handleRequest(request, env) {
       user = await getUserById(env, userId);
     }
 
-    // 创建 session
+    // 创建持久化 session
     const sessionToken = generateId();
-    const sessionData = { userId: user.id, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 };
-    sessions.set(sessionToken, sessionData);
+    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    await createSession(env, sessionToken, user.id, expiresAt);
 
     const redirectUrl = state.redirect || `${FRONTEND_URL}/profile`;
     const response = Response.redirect(`${redirectUrl}?session=${sessionToken}`, 302);
@@ -206,13 +235,13 @@ async function handleRequest(request, env) {
     const token = getSessionToken(request);
     if (!token) return new Response(JSON.stringify({ error: "未登录" }), { headers: { "Content-Type": "application/json", ...corsHeaders() } });
 
-    const session = sessions.get(token);
-    if (!session || session.exp < Date.now()) {
-      sessions.delete(token);
+    const session = await getSession(env, token);
+    if (!session || session.expires_at < Date.now()) {
+      if (session) await deleteSession(env, token);
       return new Response(JSON.stringify({ error: "会话过期" }), { headers: { "Content-Type": "application/json", ...corsHeaders() } });
     }
 
-    const user = await getUserById(env, session.userId);
+    const user = await getUserById(env, session.user_id);
     if (!user) return new Response(JSON.stringify({ error: "用户不存在" }), { headers: { "Content-Type": "application/json", ...corsHeaders() } });
 
     const { daily_credits, last_reset_date, ...rest } = user;
@@ -226,7 +255,7 @@ async function handleRequest(request, env) {
 
   if (path === "/auth/logout") {
     const token = getSessionToken(request);
-    if (token) sessions.delete(token);
+    if (token) await deleteSession(env, token);
     const response = new Response(JSON.stringify({ success: true }), { headers: { "Content-Type": "application/json", ...corsHeaders() } });
     response.headers.set("Set-Cookie", "session_token=; Path=/; HttpOnly; Max-Age=0");
     return response;
@@ -258,12 +287,12 @@ async function handleRequest(request, env) {
     const token = getSessionToken(request);
     if (!token) return new Response(JSON.stringify({ error: "未登录" }), { headers: { "Content-Type": "application/json", ...corsHeaders() } });
 
-    const session = sessions.get(token);
-    if (!session || session.exp < Date.now()) {
+    const session = await getSession(env, token);
+    if (!session || session.expires_at < Date.now()) {
       return new Response(JSON.stringify({ error: "会话过期" }), { headers: { "Content-Type": "application/json", ...corsHeaders() } });
     }
 
-    const user = await getUserById(env, session.userId);
+    const user = await getUserById(env, session.user_id);
     const today = todayStr();
     const remaining = user.plan !== "free" ? -1 : (user.last_reset_date !== today ? 3 : user.daily_credits);
 
@@ -274,13 +303,12 @@ async function handleRequest(request, env) {
     const token = getSessionToken(request);
     if (!token) return new Response(JSON.stringify({ error: "未登录" }), { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders() } });
 
-    const session = sessions.get(token);
-    if (!session || session.exp < Date.now()) {
+    const session = await getSession(env, token);
+    if (!session || session.expires_at < Date.now()) {
       return new Response(JSON.stringify({ error: "会话过期" }), { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders() } });
     }
 
-    // 检查次数
-    const check = await checkAndUseCredits(env, session.userId);
+    const check = await checkAndUseCredits(env, session.user_id);
     if (!check.allowed) {
       return new Response(JSON.stringify({ error: check.reason }), { status: 403, headers: { "Content-Type": "application/json", ...corsHeaders() } });
     }
@@ -310,7 +338,6 @@ async function handleRequest(request, env) {
     const imageDataUrl = `data:image/jpeg;base64,${imageBase64}`;
     const prompt = `A high-quality avatar portrait in ${getStylePrompt(style)} style. The face should maintain ${similarity}% visual similarity to the reference photo. Award winning portrait photography, sharp focus, detailed, 4K quality.`;
 
-    // 调用 Fal.ai
     let imageUrl;
     if (env.FAL_API_KEY) {
       const falRes = await fetch(FAL_API_URL, {
@@ -334,13 +361,11 @@ async function handleRequest(request, env) {
       const falData = await falRes.json();
       imageUrl = falData.images?.[0]?.url || falData.image?.url;
     } else {
-      // 开发模式
       imageUrl = `https://picsum.photos/seed/${crypto.randomUUID()}/512/512`;
     }
 
-    // 记录生成
     const genId = generateId();
-    await recordGeneration(env, genId, session.userId, style, Number(similarity), descriptor || "[]", imageUrl);
+    await recordGeneration(env, genId, session.user_id, style, Number(similarity), descriptor || "[]", imageUrl);
 
     return new Response(JSON.stringify({
       imageUrl,
@@ -353,12 +378,11 @@ async function handleRequest(request, env) {
   if (path === "/api/paypal/create-subscription" && request.method === "POST") {
     const token = getSessionToken(request);
     if (!token) return new Response(JSON.stringify({ error: "未登录" }), { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders() } });
-    const session = sessions.get(token);
-    if (!session || session.exp < Date.now()) return new Response(JSON.stringify({ error: "会话过期" }), { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders() } });
+    const session = await getSession(env, token);
+    if (!session || session.expires_at < Date.now()) return new Response(JSON.stringify({ error: "会话过期" }), { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders() } });
 
     const body = await request.json();
-    const plan = body.plan || "pro";
-    const user = await getUserById(env, session.userId);
+    const user = await getUserById(env, session.user_id);
 
     try {
       const accessToken = await getPayPalAccessToken(env);
@@ -411,7 +435,6 @@ async function handleRequest(request, env) {
     return new Response(JSON.stringify({ received: true }), { headers: { "Content-Type": "application/json" } });
   }
 
-  // 根路径
   if (path === "/" || path === "") {
     return new Response(JSON.stringify({ name: "AvatarMe API", version: "1.0.0" }), { headers: { "Content-Type": "application/json", ...corsHeaders() } });
   }
@@ -423,7 +446,6 @@ export default {
   async fetch(request, env, ctx) {
     try {
       const response = await handleRequest(request, env);
-      // 添加 CORS 头
       const origin = request.headers.get("Origin") || "*";
       const newHeaders = new Headers(response.headers);
       newHeaders.set("Access-Control-Allow-Origin", origin);
@@ -431,7 +453,7 @@ export default {
       return new Response(response.body, { status: response.status, headers: newHeaders });
     } catch (e) {
       console.error("Worker error:", e);
-      return new Response(JSON.stringify({ error: "Internal Server Error" }), { status: 500, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ error: "Internal Server Error", detail: e.message }), { status: 500, headers: { "Content-Type": "application/json" } });
     }
   },
 };
