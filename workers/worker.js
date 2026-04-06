@@ -234,9 +234,14 @@ async function handleRequest(request, env) {
       redirectUrl = redirectUrl.startsWith("/") ? `${FRONTEND}${redirectUrl}` : `${FRONTEND}/${redirectUrl}`;
     }
 
-    const response = Response.redirect(`${redirectUrl}?session=${sessionToken}`, 302);
-    response.headers.set("Set-Cookie", `session_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
-    return response;
+    const finalUrl = `${redirectUrl}?session=${sessionToken}`;
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: finalUrl,
+        "Set-Cookie": `session_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`,
+      },
+    });
   }
 
   if (path === "/auth/me") {

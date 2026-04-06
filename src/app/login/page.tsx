@@ -10,7 +10,10 @@ export default function LoginPage() {
     setIsLoading(true);
     // 重定向到 Worker Google OAuth
     const redirect = typeof window !== 'undefined' ? window.location.search : '';
-    window.location.href = `${API_URL}/auth/google${redirect}`;
+    const targetUrl = `${API_URL}/auth/google${redirect}`;
+    console.log("[Login] Redirecting to:", targetUrl);
+    console.log("[Login] API_URL value:", API_URL);
+    window.location.href = targetUrl;
   };
 
   return (
