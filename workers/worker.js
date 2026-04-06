@@ -1,5 +1,6 @@
 // AvatarMe Cloudflare Worker - AI Avatar Generation API
-const FRONTEND_URL = "https://avatar-me.pages.dev";
+// Note: FRONTEND_URL and WORKER_URL come from env (wrangler vars) at runtime
+const FALLBACK_FRONTEND = "https://avatar-me.pages.dev";
 
 const FAL_API_URL = "https://queue.fal.run/fal-ai/flux-schnell";
 
@@ -176,6 +177,8 @@ async function handleRequest(request, env) {
     const code = url.searchParams.get("code");
     if (!code) return new Response("Missing code", { status: 400 });
 
+    const FRONTEND = env.FRONTEND_URL || FALLBACK_FRONTEND;
+
     let state = { redirect: "/" };
     try {
       const stateParam = url.searchParams.get("state");
@@ -198,7 +201,7 @@ async function handleRequest(request, env) {
 
     if (!tokenData.access_token) {
       console.error("Google token exchange failed:", tokenData);
-      return Response.redirect(`${FRONTEND_URL}/login?error=token_exchange_failed`, 302);
+      return Response.redirect(`${FRONTEND}/login?error=token_exchange_failed`, 302);
     }
 
     // 获取用户信息
@@ -209,7 +212,7 @@ async function handleRequest(request, env) {
 
     if (!googleUser.email) {
       console.error("Google userinfo missing email:", googleUser);
-      return Response.redirect(`${FRONTEND_URL}/login?error=userinfo_failed`, 302);
+      return Response.redirect(`${FRONTEND}/login?error=userinfo_failed`, 302);
     }
 
     // 查找或创建用户
@@ -225,7 +228,12 @@ async function handleRequest(request, env) {
     const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
     await createSession(env, sessionToken, user.id, expiresAt);
 
-    const redirectUrl = state.redirect || `${FRONTEND_URL}/profile`;
+    // 确保 redirect 是绝对 URL
+    let redirectUrl = state.redirect || `${FRONTEND}/profile`;
+    if (!redirectUrl.startsWith("http")) {
+      redirectUrl = redirectUrl.startsWith("/") ? `${FRONTEND}${redirectUrl}` : `${FRONTEND}/${redirectUrl}`;
+    }
+
     const response = Response.redirect(`${redirectUrl}?session=${sessionToken}`, 302);
     response.headers.set("Set-Cookie", `session_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
     return response;
@@ -406,8 +414,8 @@ async function handleRequest(request, env) {
         plan_id: planData.id,
         subscriber: { email_address: user.email },
         custom_id: JSON.stringify({ user_id: user.id, plan: "pro" }),
-        return_url: `${FRONTEND_URL}/profile?subscription_return=1&plan=pro`,
-        cancel_url: `${FRONTEND_URL}/profile?subscription_cancel=1`,
+        return_url: `${env.FRONTEND_URL || FALLBACK_FRONTEND}/profile?subscription_return=1&plan=pro`,
+        cancel_url: `${env.FRONTEND_URL || FALLBACK_FRONTEND}/profile?subscription_cancel=1`,
       });
       const order = await orderRes.json();
       const approvalUrl = order.links?.find(l => l.rel === "approve")?.href;
