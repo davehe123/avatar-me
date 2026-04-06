@@ -162,15 +162,20 @@ CREATE TABLE generations (
 
 ## 7. 开发进度
 
-### Week 1：核心功能 ✅(进行中)
-- [x] 项目初始化 (Next.js + Cloudflare Pages)
-- [ ] face-api.js 人脸检测集成
-- [ ] Fal.ai API 调用
-- [ ] 基础 UI + 风格选择组件
+### Week 1：核心功能 ✅ (基本完成)
+- [x] 项目初始化 (Next.js 15.5.2 + Cloudflare Pages)
+- [x] face-api.js 人脸检测集成
+- [x] 15 种风格定义 (动漫/游戏/艺术/潮流)
+- [x] 相似度滑块 (60%-95%)
+- [x] 基础 UI + 风格选择组件
+- [x] GitHub 仓库创建
+- [x] Cloudflare Pages 部署上线
+- [ ] Fal.ai API 调用（需 Worker 后端）
 - [ ] 本地测试生成流程
 
 ### Week 2：用户系统
 - [ ] Cloudflare D1 数据库初始化
+- [ ] Cloudflare Worker 后端（AI 生成 API）
 - [ ] 用户注册/登录（邮箱 + Google OAuth）
 - [ ] 每日次数限制逻辑
 - [ ] 生成记录存储
@@ -184,8 +189,8 @@ CREATE TABLE generations (
 - [ ] Pro 功能解锁逻辑
 
 ### Week 4：发布
-- [ ] 域名解析 + SSL
-- [ ] Cloudflare Pages 部署
+- [x] Cloudflare Pages 部署
+- [ ] 自定义域名绑定
 - [ ] Reddit 社区推广
 - [ ] Telegram 群组推广
 - [ ] 收集用户反馈

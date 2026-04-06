@@ -3,7 +3,8 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import Image from "next/image";
 import { useFaceDetection } from "@/lib/useFaceDetection";
-import { STYLES, CATEGORIES, BASIC_STYLES } from "@/lib/styles";
+import { STYLES, CATEGORIES } from "@/lib/styles";
+import { API_URL } from "@/lib/config";
 
 type Step = "upload" | "select" | "generate" | "result";
 
@@ -22,11 +23,36 @@ export default function GeneratePage() {
   const [category, setCategory] = useState("all");
   const [isGenerating, setIsGenerating] = useState(false);
   const [result, setResult] = useState<GenerationResult | null>(null);
-  const [credits] = useState(3);
+  const [credits, setCredits] = useState<number>(3);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { isModelLoading, detectFace, error: detectionError } = useFaceDetection();
+
+  // 检查用户登录状态
+  useEffect(() => {
+    async function checkAuth() {
+      try {
+        const res = await fetch(`${API_URL}/auth/me`, { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          setIsLoggedIn(true);
+          setCredits(data.user?.remaining_credits ?? 3);
+        } else {
+          setIsLoggedIn(false);
+          setCredits(3);
+        }
+      } catch {
+        setIsLoggedIn(false);
+        setCredits(3);
+      } finally {
+        setIsLoadingUser(false);
+      }
+    }
+    checkAuth();
+  }, []);
 
   const filteredStyles =
     category === "all"
@@ -95,7 +121,7 @@ export default function GeneratePage() {
         JSON.stringify(Array.from(detection.descriptor || new Float32Array(128)))
       );
 
-      const response = await fetch("/api/generate", {
+      const response = await fetch(`${API_URL}/api/generate`, {
         method: "POST",
         body: formData,
       });
@@ -112,6 +138,10 @@ export default function GeneratePage() {
         style: selectedStyle.name,
         similarity,
       });
+      // 更新剩余次数
+      if (typeof data.remaining === 'number') {
+        setCredits(data.remaining);
+      }
       setStep("result");
     } catch (err) {
       console.error("Generation error:", err);
@@ -130,7 +160,13 @@ export default function GeneratePage() {
             <span className="gradient-text">生成 AI 头像</span>
           </h1>
           <p className="text-purple-200/60">
-            剩余 {credits} 次生成机会 · 今日免费额度
+            {isLoadingUser ? (
+              "加载中..."
+            ) : isLoggedIn ? (
+              <>剩余 <span className="text-purple-400 font-bold">{credits === -1 ? '∞' : credits}</span> 次生成机会</>
+            ) : (
+              <>免费用户每日 3 次 · <a href="/login" className="text-purple-400 hover:underline">登录</a> 保存记录</>
+            )}
           </p>
         </div>
 

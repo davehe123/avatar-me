@@ -1,0 +1,13 @@
+name = "avatar-me-api"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+main = "worker.js"
+
+[vars]
+FRONTEND_URL = "https://avatar-me.pages.dev"
+WORKER_URL = "https://avatar-me-api.deforde159.workers.dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "avatarme_db"
+database_id = "a7fbcefb-4bb5-4b6b-8546-86af64f6acb1"

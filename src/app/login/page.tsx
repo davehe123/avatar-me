@@ -1,14 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import { API_URL } from "@/lib/config";
 
 export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
 
   const handleGoogleLogin = () => {
     setIsLoading(true);
-    // 重定向到 Google OAuth
-    window.location.href = "/api/auth/google";
+    // 重定向到 Worker Google OAuth
+    const redirect = typeof window !== 'undefined' ? window.location.search : '';
+    window.location.href = `${API_URL}/auth/google${redirect}`;
   };
 
   return (
