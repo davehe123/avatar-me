@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useFaceDetection } from "@/lib/useFaceDetection";
 import { STYLES, CATEGORIES } from "@/lib/styles";
 import { API_URL } from "@/lib/config";
+import { downloadImage } from "@/lib/watermark";
 
 type Step = "upload" | "select" | "generate" | "result";
 
@@ -35,7 +36,10 @@ export default function GeneratePage() {
   useEffect(() => {
     async function checkAuth() {
       try {
-        const res = await fetch(`${API_URL}/auth/me`, { credentials: 'include' });
+        const token = localStorage.getItem("session_token");
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch(`${API_URL}/auth/me`, { headers });
         if (res.ok) {
           const data = await res.json();
           setIsLoggedIn(true);
@@ -121,8 +125,13 @@ export default function GeneratePage() {
         JSON.stringify(Array.from(detection.descriptor || new Float32Array(128)))
       );
 
+      const token = localStorage.getItem("session_token");
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const response = await fetch(`${API_URL}/api/generate`, {
         method: "POST",
+        headers,
         body: formData,
       });
 
@@ -375,12 +384,13 @@ export default function GeneratePage() {
 
               <div className="flex justify-center gap-4">
                 <button
-                  onClick={() => {
-                    // Download image
-                    const link = document.createElement("a");
-                    link.href = result.imageUrl;
-                    link.download = `avatarme-${result.style}-${Date.now()}.png`;
-                    link.click();
+                  onClick={async () => {
+                    // 下载图片（自动添加水印）
+                    await downloadImage(
+                      result.imageUrl,
+                      `avatarme-${result.style}-${Date.now()}.png`,
+                      true
+                    );
                   }}
                   className="px-6 py-3 rounded-xl font-medium glass-card hover:bg-purple-500/10 transition-colors"
                 >

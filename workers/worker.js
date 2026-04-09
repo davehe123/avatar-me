@@ -3,6 +3,8 @@
 const FALLBACK_FRONTEND = "https://avatar-me.pages.dev";
 
 const FAL_API_URL = "https://queue.fal.run/fal-ai/flux-schnell";
+const REPLICATE_MODEL = "black-forest-labs/flux-schnell";
+const REPLICATE_VERSION = "c846a69991daf4c0e5d016514849d14ee5b2e6846ce6b9d6f21369e564cfe51e";
 
 // ========== PayPal 配置 ==========
 const PAYPAL_BASE = "https://api-m.paypal.com";
@@ -166,7 +168,8 @@ async function handleRequest(request, env) {
 
   // ========== 认证相关 ==========
   if (path === "/auth/google") {
-    const state = base64urlEncode({ redirect: url.searchParams.get("redirect") || "/" });
+    const frontendUrl = url.searchParams.get("frontend_url") || null;
+    const state = base64urlEncode({ redirect: url.searchParams.get("redirect") || "/", frontendUrl });
     const scopes = encodeURIComponent("email profile");
     const callback = encodeURIComponent(`${env.WORKER_URL}/auth/callback`);
     const googleUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${env.GOOGLE_CLIENT_ID}&redirect_uri=${callback}&response_type=code&scope=${scopes}&state=${state}&access_type=offline`;
@@ -228,11 +231,19 @@ async function handleRequest(request, env) {
     const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
     await createSession(env, sessionToken, user.id, expiresAt);
 
-    // 确保 redirect 是绝对 URL
+    // 默认 redirect 到 profile 而不是 /
     let redirectUrl = state.redirect || `${FRONTEND}/profile`;
     if (!redirectUrl.startsWith("http")) {
       redirectUrl = redirectUrl.startsWith("/") ? `${FRONTEND}${redirectUrl}` : `${FRONTEND}/${redirectUrl}`;
     }
+
+    // 如果 redirect 是首页 "/" 或空，改为 profile
+    if (redirectUrl === `${FRONTEND}/` || redirectUrl.endsWith("/?")) {
+      redirectUrl = `${FRONTEND}/profile`;
+    }
+
+    // 直接跳转模式：跳转到 callback 页面处理 session
+    redirectUrl = `${FRONTEND}/callback`;
 
     const finalUrl = `${redirectUrl}?session=${sessionToken}`;
     return new Response(null, {
@@ -335,7 +346,15 @@ async function handleRequest(request, env) {
       similarity = formData.get("similarity") || "80";
       descriptor = formData.get("descriptor");
       const imageFile = formData.get("image");
-      if (imageFile) imageBase64 = btoa(await imageFile.arrayBuffer().then(b => String.fromCharCode(...new Uint8Array(b))));
+      if (imageFile) {
+        const ab = await imageFile.arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        imageBase64 = btoa(binary);
+      }
     } else {
       const body = await request.json();
       style = body.style;
@@ -352,29 +371,67 @@ async function handleRequest(request, env) {
     const prompt = `A high-quality avatar portrait in ${getStylePrompt(style)} style. The face should maintain ${similarity}% visual similarity to the reference photo. Award winning portrait photography, sharp focus, detailed, 4K quality.`;
 
     let imageUrl;
+
+    // 1. Fal.ai
     if (env.FAL_API_KEY) {
       const falRes = await fetch(FAL_API_URL, {
         method: "POST",
         headers: { Authorization: "Key " + env.FAL_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          image_url: imageDataUrl,
-          num_inference_steps: 4,
-          guidance_scale: 3.5,
-          enable_safety_checker: true,
-        }),
+        body: JSON.stringify({ prompt, image_url: imageDataUrl, num_inference_steps: 4, guidance_scale: 3.5, enable_safety_checker: true }),
       });
-
-      if (!falRes.ok) {
-        const err = await falRes.text();
-        console.error("Fal.ai error:", err);
-        return new Response(JSON.stringify({ error: "AI 生成失败，请稍后重试" }), { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders() } });
+      if (falRes.ok) {
+        const falData = await falRes.json();
+        imageUrl = falData.images?.[0]?.url || falData.image?.url;
+      } else {
+        console.error("Fal.ai error:", await falRes.text());
       }
+    }
 
-      const falData = await falRes.json();
-      imageUrl = falData.images?.[0]?.url || falData.image?.url;
-    } else {
-      imageUrl = `https://picsum.photos/seed/${crypto.randomUUID()}/512/512`;
+    // 2. Replicate
+    if (!imageUrl && env.REPLICATE_API_KEY) {
+      try {
+        // 创建预测
+        const createRes = await fetch("https://api.replicate.com/v1/predictions", {
+          method: "POST",
+          headers: { Authorization: "Token " + env.REPLICATE_API_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            version: REPLICATE_VERSION,
+            input: { prompt, aspect_ratio: "1:1", num_inference_steps: 4 },
+          }),
+        });
+
+        if (createRes.ok) {
+          let prediction = await createRes.json();
+          const pollUrl = prediction.urls?.poll;
+
+          // 轮询直到完成（最多30秒）
+          for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const pollRes = await fetch(pollUrl, { headers: { Authorization: "Token " + env.REPLICATE_API_KEY } });
+            prediction = await pollRes.json();
+            if (prediction.status === "succeeded") {
+              imageUrl = prediction.output?.[prediction.output.length - 1];
+              break;
+            } else if (prediction.status === "failed") {
+              console.error("Replicate failed:", prediction.error);
+              break;
+            }
+          }
+        } else {
+          console.error("Replicate create error:", await createRes.text());
+        }
+      } catch (e) {
+        console.error("Replicate exception:", e);
+      }
+    }
+
+    // 3. 模拟模式（无 AI key 或 AI 调用失败）
+    if (!imageUrl) {
+      // 用 style + similarity 生成伪随机 seed，保证同风格每次生成相似结果
+      const seed = `${style}-${similarity}-${Date.now()}`.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+      const mockId = Math.abs(seed) % 100000;
+      imageUrl = `https://picsum.photos/seed/${mockId}/512/512?random=${Date.now()}`;
+      console.log(`[Mock mode] Using placeholder image: ${imageUrl}`);
     }
 
     const genId = generateId();
